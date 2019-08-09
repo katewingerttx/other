@@ -1,0 +1,419 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import random
+import math
+import time
+start = time.time()
+
+# write data into correct form
+
+df = pd.read_excel(r'C:\Users\bmpkpw\Desktop\Kate Winger\Mileage_FIS_TimeSeries_Data_manyfeatures.xlsx', sheet_name='All Conventional')
+print('Number of rows and columns:', df.shape)
+df.head(5)
+array = df.to_numpy()
+# Data Standardization
+array[:,0] = array[:,0] - 2010
+array[:,2] = array[:,2] / 100000000
+array[:,3] = array[:,3] / 100000000
+array[:,4] = array[:,4] / 100000000
+array[:,5] = array[:,5] / 100000000
+array[:,6] = array[:,6] / 100000000
+print(array)
+ 
+def getMileageData(sizeRollingWindow):
+    mileageData = np.zeros(shape=(len(array)-sizeRollingWindow,(sizeRollingWindow*3)+3), dtype=np.float32)
+    for i in range(len(array)-sizeRollingWindow):
+        for j in range(sizeRollingWindow):
+            mileageData[i,j] = array[i+j,2] # first [sizeRollingWindow] mileage datapoints as inputs
+        for j in range(sizeRollingWindow):
+            mileageData[i,sizeRollingWindow+j+1] = array[i+j,3] # first [sizeRollingWindow] FIS datapoints as inputs
+        mileageData[i,sizeRollingWindow] = array[i+sizeRollingWindow,5] # FIS datapoint prediction for month to predict
+        for j in range(12):
+            if array[i+sizeRollingWindow,1] == j+1:
+                mileageData[i,(sizeRollingWindow*2)+1+j] = 1 # january = true
+        mileageData[i,(sizeRollingWindow*3)+1] = array[i+sizeRollingWindow,0] # year of prediction
+        mileageData[i,(sizeRollingWindow*3)+2] = array[i+sizeRollingWindow,4] # mileage datapoint to predict
+    return mileageData
+
+
+class NeuralNetwork:
+    
+    def __init__(self, numIn, numHid, numOut, seed):
+        
+        self.numInput = numIn
+        self.numHidden = numHid
+        self.numOutput = numOut
+        
+        self.iNodes = np.zeros(shape=[self.numInput], dtype=np.float32) # creates input nodes
+        self.hNodes = np.zeros(shape=[self.numHidden], dtype=np.float32) # creates hidden nodes
+        self.oNodes = np.zeros(shape=[self.numOutput], dtype=np.float32) # creates output nodes
+    
+        self.ihWeights = np.zeros(shape=[self.numInput,self.numHidden], dtype=np.float32) # array of input x hidden weights
+        self.hoWeights = np.zeros(shape=[self.numHidden,self.numOutput], dtype=np.float32) # array of hidden x output weights
+        
+        self.hBiases = np.zeros(shape=[self.numHidden], dtype=np.float32)
+        self.oBiases = np.zeros(shape=[self.numOutput], dtype=np.float32)
+        
+        self.rnd = random.Random(seed) # allows multiple instances
+        self.initializeWeights()
+        
+    def setWeights(self, weights):
+        if len(weights) != self.totalWeights():
+            print("Warning: len(weights) error in setWeights()")
+            
+        idx = 0
+        for i in range(self.numInput):
+            for j in range(self.numHidden):
+                self.ihWeights[i,j] = weights[idx]
+                idx += 1
+                
+        for j in range(self.numHidden):
+            self.hBiases[j] = weights[idx]
+            idx += 1
+                
+        for j in range(self.numHidden):
+            for k in range(self.numOutput):
+                self.hoWeights[j,k] = weights[idx]
+                idx += 1
+                
+        for k in range(self.numOutput):
+            self.oBiases[k] = weights[idx]
+            idx += 1
+                    
+    def getWeights(self):
+        tw = self.totalWeights()
+        result = np.zeros(shape=[tw], dtype=np.float32)
+        idx = 0 # points into result
+        
+        for i in range(self.numInput):
+            for j in range(self.numHidden):
+                result[idx] = self.ihWeights[i,j]
+                idx += 1
+                
+        for j in range(self.numHidden):
+            result[idx] = self.hBiases[j]
+            idx += 1
+            
+        for j in range(self.numHidden):
+            for k in range(self.numOutput):
+                result[idx] = self.hoWeights[j,k]
+                idx += 1
+            
+        for k in range(self.numOutput):
+            result[idx] = self.oBiases[k]
+            idx += 1
+                     
+        return result
+        
+    def initializeWeights(self):
+        numWts = self.totalWeights()
+        wts = np.zeros(shape=[numWts], dtype=np.float32)
+        lo = -0.5; hi = 0.5
+        for idx in range(len(wts)):
+            wts[idx] = (hi-lo) * self.rnd.random() + lo
+        self.setWeights(wts)
+        
+    def computeOutputs(self, xValues): # forward propagation
+        
+        hSums = np.zeros(shape=[self.numHidden], dtype=np.float32)
+        oSums = np.zeros(shape=[self.numOutput], dtype=np.float32)
+        
+        for i in range(self.numInput):
+            self.iNodes[i] = xValues[i]
+            
+        for j in range(self.numHidden):
+            for i in range(self.numInput):
+                hSums[j] += self.iNodes[i] * self.ihWeights[i,j]
+        
+        for j in range(self.numHidden):
+            hSums[j] += self.hBiases[j]
+            
+        for j in range(self.numHidden):
+            self.hNodes[j] = self.hypertan(hSums[j]) # play with activation function (tan?)
+            
+        for k in range(self.numOutput):
+            for j in range(self.numHidden):
+                oSums[k] += self.hNodes[j] * self.hoWeights[j,k]
+        
+        for k in range(self.numOutput):
+            oSums[k] += self.oBiases[k]
+
+        self.oNodes = oSums
+
+        result = np.zeros(shape=[self.numOutput], dtype=np.float32)
+        for k in range(self.numOutput):
+            result[k] = self.oNodes[k]
+            
+        return result
+
+    def train(self, trainData, maxEpochs, learnRate, errUpdate, momentum):
+        
+        hoGrads = np.zeros(shape=[self.numHidden, self.numOutput], dtype=np.float32) # hidden-to-output weights gradients
+        obGrads = np.zeros(shape=[self.numOutput], dtype=np.float32) # output node biases gradients
+        ihGrads = np.zeros(shape=[self.numInput, self.numHidden], dtype=np.float32) # input-to-hidden weights gradients
+        hbGrads = np.zeros(shape=[self.numHidden], dtype=np.float32) # hidden biases gradients
+        
+        oSignals = np.zeros(shape=[self.numOutput], dtype=np.float32) # output signals: gradients w/o assoc. input terms
+        hSignals = np.zeros(shape=[self.numHidden], dtype=np.float32) # hidden signals: gradients w/o assoc. input terms
+        
+        ih_prev_weights_delta = np.zeros(shape=[self.numInput, self.numHidden], dtype=np.float32) # momentum
+        h_prev_biases_delta = np.zeros(shape=[self.numHidden], dtype=np.float32)
+        ho_prev_weights_delta = np.zeros(shape=[self.numHidden, self.numOutput], dtype=np.float32)
+        o_prev_biases_delta = np.zeros(shape=[self.numOutput], dtype=np.float32)
+        
+        epoch = 0
+        self.numTrainItems = len(trainData)
+        x_values = np.zeros(shape=[self.numInput], dtype=np.float32)
+        output = np.zeros(shape=[self.numOutput], dtype=np.float32)
+        actual_values = np.zeros(shape=[self.numOutput], dtype=np.float32)
+
+        indices = np.arange(self.numTrainItems) # [0, 1, 2, . . n-1] 
+        err = np.full(shape=[maxEpochs//errUpdate + 1], fill_value = 1000, dtype=np.float32)
+
+        while epoch <= maxEpochs:
+            if epoch == 0:
+                time1 = time.time()
+            
+            self.rnd.shuffle(indices) # scramble order of training items
+            for ii in range(self.numTrainItems):
+                idx = indices[ii]
+                
+                for j in range(self.numInput):
+                    x_values[j] = trainData[idx,j] # get the input values
+                for j in range(self.numOutput):
+                    actual_values[j] = trainData[idx,j+self.numInput] # get target values
+                self.computeOutputs(x_values) # results stored internally
+                
+            # Backpropagation
+                
+                #1. compute output node signals
+                for k in range(self.numOutput):
+                    deriv = 1
+                    #deriv = self.hypertan_derivative(self.oNodes[k])
+                    oSignals[k] = deriv * (self.oNodes[k] - actual_values[k])
+                
+                #2. compute hidden-to-output weight gradients using output signals
+                for j in range(self.numHidden):
+                    for k in range(self.numOutput):
+                        hoGrads[j,k] = oSignals[k] * self.hNodes[j]
+                        
+                #3. compute output node bias gradients using output signals
+                for k in range(self.numOutput):
+                    obGrads[k] = oSignals[k] 
+                    
+                #4. compute hidden node signals
+                for j in range(self.numHidden):
+                    sum = 0.0
+                    for k in range(self.numOutput):
+                        sum += oSignals[k] * self.hoWeights[j,k]
+                    deriv = (1 - self.hNodes[j]) * (1 + self.hNodes[j]) # tanh
+                    #deriv = self.hypertan_derivative(self.hNodes[j])
+                    hSignals[j] = deriv * sum
+                    
+                #5. compute input-to-hidden weight gradients using hidden signals
+                for i in range(self.numInput):
+                    for j in range(self.numHidden):
+                        ihGrads[i,j] = hSignals[j] * self.iNodes[i]
+                        
+                #6. compute hidden node bias gradients using hidden signals
+                for j in range(self.numHidden):
+                    hbGrads[j] = hSignals[j]
+                
+            # update weights and biases using the gradients and momentum
+                
+                #1. update input-to-hidden weights
+                for i in range(self.numInput):
+                    for j in range(self.numHidden):
+                        delta = -1.0 * learnRate * ihGrads[i,j]
+                        self.ihWeights[i,j] += delta
+                        self.ihWeights[i,j] += momentum * ih_prev_weights_delta[i,j]
+                        ih_prev_weights_delta[i,j] = delta # save delta for next iteration
+                    
+                #2. update hidden node biases
+                for j in range(self.numHidden):
+                    delta = -1.0 * learnRate * hbGrads[j]
+                    self.hBiases[j] += delta
+                    self.hBiases[j] += momentum * h_prev_biases_delta[j]
+                    h_prev_biases_delta[j] = delta 
+                    
+                #3. update hidden-to-output weights
+                for j in range(self.numHidden):
+                    for k in range(self.numOutput):
+                        delta = -1.0 * learnRate * hoGrads[j,k]
+                        self.hoWeights[j,k] += delta
+                        self.hoWeights[j,k] += momentum * ho_prev_weights_delta[j,k]
+                        ho_prev_weights_delta[j,k] = delta
+                    
+                #4. update output node biases
+                for k in range(self.numOutput):
+                    delta = -1.0 * learnRate * obGrads[k]
+                    self.oBiases[k] += delta
+                    self.oBiases[k] += momentum * o_prev_biases_delta[k]
+                    o_prev_biases_delta[k] = delta
+               
+            if epoch == 0:
+                epochTime = (time.time() - time1)
+                print("\nEstimated training time: %.1f minutes\n" % ((epochTime * maxEpochs) / 60))
+            
+            if epoch % errUpdate == 0:
+                mape = self.MAPE(trainData)
+                if all(x > mape for x in err): # determine weights with least error
+                    self.finalWeights = self.getWeights()
+                    print("epoch = " + str(epoch) +" mape = %0.4f (best weights)" % mape)
+                else:
+                    print("epoch = " + str(epoch) +" mape = %0.4f " % mape)
+                err[epoch//errUpdate] = mape
+            
+            # print percent complete with training
+            percent = ((epoch / maxEpochs) * 100)
+            percentComplete = "Percent Complete: %f%%" % percent
+            print("Percent Complete: %.3f%%" % percent, end="\r")    
+            
+            epoch += 1
+            
+            
+        # end while
+        
+        # print error plot
+        x = np.arange(maxEpochs//errUpdate + 1)
+        plt.plot(x,err)
+        plt.xlabel('Epochs / %d' % errUpdate)
+        plt.ylabel('MeanSquaredError')
+        plt.show()
+               
+        result = self.getWeights()
+        return result
+    # end train
+    
+    def accuracy(self, trainData, tdata, howClose, histData): 
+        num_correct = 0; num_wrong = 0
+        self.setWeights(self.finalWeights) # use weights with the least error
+        
+        print("weights: ", self.finalWeights)
+        
+        x_values = np.zeros(shape=[self.numInput], dtype=np.float32)
+        actual_values = np.zeros(shape=[self.numOutput], dtype=np.float32)
+        dataLength = len(trainData)
+        
+        for i in range(dataLength): # walk through each data item
+            for j in range(self.numInput): # peel off input values from current data row
+                x_values[j] = trainData[i,j]
+            for j in range(self.numOutput): # peel off target values from current data row
+                actual_values[j] = trainData[i,self.numInput]
+            
+            output_values = self.computeOutputs(x_values) # computed output values
+            
+            if (np.absolute(output_values[0] - actual_values[0]) < (howClose*actual_values[0])): # within a certain amount to be correct
+                num_correct += 1
+            else:
+                num_wrong += 1
+                
+#            if i < 6:
+            print("%d: %.5f\t%.5f\t%2.1f %%" % (i, actual_values[0], output_values[0], (np.absolute((actual_values[0] - output_values[0]) / actual_values[0])*100)))
+        
+        print("\n Comparison with historical prediction data: ")
+        print("   Actual:    Prediction:     % Error:   Historical:        % Error:")
+        for i in range(len(histData)):     
+            for j in range(self.numInput): # peel off input values from current data row
+                x_values[j] = tdata[i,j]
+            for j in range(self.numOutput): # peel off target values from current data row
+                actual_values[j] = tdata[i,self.numInput]
+            output_values = self.computeOutputs(x_values) # computed output values
+            print("%d: %.5f\t%.5f\t%.1f %%\t%.5f\t%.1f %%" % (i, actual_values[0], output_values[0], (np.absolute((actual_values[0] - output_values[0]) / actual_values[0])*100), histData[i], (np.absolute((actual_values[0] - histData[i]) / actual_values[0])*100)))
+
+        return (num_correct) / (num_correct + num_wrong)
+
+    def MAPE(self, tdata):
+        sumPercentError = 0.0
+        
+        x_values = np.zeros(shape=[self.numInput], dtype=np.float32)
+        actual_values = np.zeros(shape=[self.numOutput], dtype=np.float32)
+        
+        for ii in range(self.numTrainItems): # walk through each data item
+            for jj in range(self.numInput): # peel off input values from current data row
+                x_values[jj] = tdata[ii,jj]
+            for jj in range(self.numOutput): # peel of target values from current data row
+                actual_values[jj] = tdata[ii,jj+self.numInput]
+                
+            output_values = self.computeOutputs(x_values) # computed output values
+            
+            for j in range(self.numOutput):
+                err = np.absolute(actual_values[j] - output_values[j]) / actual_values[j]
+                sumPercentError += err
+                
+        return sumPercentError / self.numTrainItems
+    
+    def hypertan(self,x):
+        if x < -20.0:
+            return -1.0
+        elif x > 20.0:
+            return 1.0
+        else:
+            return math.tanh(x)
+    
+    def hypertan_derivative(self,x):
+        return (1-(math.tanh(x)*math.tanh(x)))
+    
+    def totalWeights(self):
+        tw = (self.numInput * self.numHidden) + (self.numHidden * self.numOutput) + self.numHidden + self.numOutput
+        return tw
+
+# end class NeuralNetwork
+
+
+
+
+def main():
+    sizeRollingWindow = 12 # number of monthly datapoints used for predictions
+    numIn = (sizeRollingWindow*3)+2 # number of inputs (rolling window size)
+    numHid = 15 # number of neurons in hidden layer
+    numOut = 1 # number of outputs (predict next mileage number)
+    
+    print("\nBegin time series with raw mileage data ")
+    mileageData = getMileageData(sizeRollingWindow)
+    print(len(mileageData))
+    
+# export to excel to check getMileageData() 
+#    writer = pd.ExcelWriter('C:\\Users\\bmpkpw\\Desktop\\Kate Winger\\mileageData.xlsx')
+#    data = pd.DataFrame(mileageData)
+#    data.to_excel(writer)
+#    writer.save()
+    
+    trainMileageData = mileageData[0:79,:]
+    testMileageData = mileageData[80:100,:]
+    np.set_printoptions(formatter = {'float': '{: 0.5f}'.format})
+    
+    lenData = len(mileageData)
+    
+    print("\nFirst four rows of data: ")
+    print(trainMileageData[0:4,0:numIn])
+    
+    print("\nCreating a %d-%d-%d neural network " % (numIn, numHid, numOut))
+    nn = NeuralNetwork(numIn, numHid, numOut, seed=0)
+    
+    maxEpochs = 1000
+    learnRate = .05
+    errUpdate = 50
+    momentum = 0
+    print("\nSetting maxEpochs = " + str(maxEpochs))
+    print("Setting learning rate = %0.3f " % learnRate)
+    print("\nStarting training...")
+    nn.train(trainMileageData, maxEpochs, learnRate, errUpdate, momentum)
+    print("Training complete. \n")
+    
+    print("First few month-actual-predicted: ")
+    historicPredictionData = np.zeros(shape=(20,1), dtype=np.float32)
+    for i in range(20):
+        historicPredictionData[i,0] = array[i+92,7] # historic mileage prediction numbers to compare model predictions to
+    howClose = .02 # within what percentage of error is considered correct/acceptable
+    acc = nn.accuracy(trainMileageData, testMileageData, howClose, historicPredictionData)
+    
+    print("\nAccuracy on %d-item data within %.2f%% = %0.4f " % (len(trainMileageData), (howClose*100), acc))
+    
+    print("\nEnd \n")
+    
+        
+    # end of code      
+main()
+print("Run Time: %.1f minutes" % ((time.time() - start) / 60))
